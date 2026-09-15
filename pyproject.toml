@@ -118,6 +118,7 @@ license-files = []
 
 [project.scripts]
 qrun = "qlib.cli.run:run"
+qlib-ui = "qlib.cli.ui:main"
 
 [tool.setuptools_scm]
 local_scheme = "no-local-version"

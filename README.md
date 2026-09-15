@@ -161,6 +161,18 @@ This quick start guide tries to demonstrate
 1. It's very easy to build a complete Quant research workflow and try your ideas with _Qlib_.
 2. Though with *public data* and *simple models*, machine learning technologies **work very well** in practical Quant investment.
 
+## Local Web UI
+
+Qlib includes a lightweight local interface for discovering and running common workflows without composing terminal commands. It accepts natural-language questions in Chinese, recommends a fixed set of trusted actions, previews the exact command, and runs it only after confirmation. The server listens on the local computer only and does not turn free-form input into shell commands.
+
+After installing Qlib from this source checkout, launch the interface with:
+
+```bash
+qlib-ui
+```
+
+The browser opens automatically. The initial actions cover environment checks, market-data preview, data-health validation, and the Alpha158 LightGBM workflow. Set `QLIB_DATA_DIR` before launch to use a data directory other than `~/.qlib/qlib_data/cn_data`.
+
 Here is a quick **[demo](https://terminalizer.com/view/3f24561a4470)** shows how to install ``Qlib``, and run LightGBM with ``qrun``. **But**, please make sure you have already prepared the data following the [instruction](#data-preparation).
 
 
