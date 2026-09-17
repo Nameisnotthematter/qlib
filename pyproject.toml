@@ -118,6 +118,7 @@ license-files = []
 
 [project.scripts]
 qrun = "qlib.cli.run:run"
+qlib = "qlib.cli.ui:main"
 qlib-ui = "qlib.cli.ui:main"
 
 [tool.setuptools_scm]

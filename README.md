@@ -168,10 +168,10 @@ Qlib includes a lightweight local interface for discovering and running common w
 After installing Qlib from this source checkout, launch the interface with:
 
 ```bash
-qlib-ui
+qlib
 ```
 
-The browser opens automatically. The initial actions cover environment checks, market-data preview, data-health validation, and the Alpha158 LightGBM workflow. Set `QLIB_DATA_DIR` before launch to use a data directory other than `~/.qlib/qlib_data/cn_data`.
+The browser opens automatically. `qlib-ui` remains available as a compatibility alias. The initial actions cover environment checks, market-data preview, data-health validation, and the Alpha158 LightGBM workflow. Set `QLIB_DATA_DIR` before launch to use a data directory other than `~/.qlib/qlib_data/cn_data`.
 
 Here is a quick **[demo](https://terminalizer.com/view/3f24561a4470)** shows how to install ``Qlib``, and run LightGBM with ``qrun``. **But**, please make sure you have already prepared the data following the [instruction](#data-preparation).
 
