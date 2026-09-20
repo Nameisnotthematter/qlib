@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from qlib.cli.ui import ActionRunner, Run, build_actions, create_server, recommend_actions
+from qlib.cli.ui import ActionRunner, Run, build_actions, create_server, launch_ui, recommend_actions
 
 
 @pytest.fixture
@@ -110,6 +110,7 @@ def test_http_api_requires_preview_token():
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
     try:
+        assert json.load(urlopen(base_url + "/api/health")) == {"service": "qlib-ui", "status": "ok"}
         catalog = json.load(urlopen(base_url + "/api/catalog"))
         assert len(catalog["actions"]) == 4
         assert "command" not in catalog["actions"][0]
@@ -123,6 +124,21 @@ def test_http_api_requires_preview_token():
         with pytest.raises(HTTPError) as exc_info:
             urlopen(request)
         assert exc_info.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_launch_ui_reuses_running_instance():
+    server = create_server("127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with patch("qlib.cli.ui.webbrowser.open") as open_browser:
+            launch_ui("127.0.0.1", server.server_port)
+        open_browser.assert_called_once_with(base_url)
     finally:
         server.shutdown()
         server.server_close()

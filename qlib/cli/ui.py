@@ -4,6 +4,7 @@
 """A dependency-free, local web interface for common Qlib workflows."""
 
 import argparse
+import errno
 import ipaddress
 import json
 import os
@@ -21,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -253,6 +255,9 @@ class QlibUIHandler(BaseHTTPRequestHandler):
             self._json({"error": "Invalid host."}, HTTPStatus.FORBIDDEN)
             return
         path = urlparse(self.path).path
+        if path == "/api/health":
+            self._json({"service": "qlib-ui", "status": "ok"})
+            return
         if path == "/api/catalog":
             self._json({"actions": [action.card_dict() for action in self.runner.actions.values()]})
             return
@@ -363,17 +368,54 @@ def create_server(host: str = "127.0.0.1", port: int = 8787) -> ThreadingHTTPSer
     return ThreadingHTTPServer((host, port), handler)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Open the local Qlib web interface.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8787)
-    parser.add_argument("--no-browser", action="store_true")
-    args = parser.parse_args()
+def _server_url(host: str, port: int) -> str:
+    display_host = f"[{host}]" if ":" in host else host
+    return f"http://{display_host}:{port}"
 
-    server = create_server(args.host, args.port)
-    url = f"http://{args.host}:{server.server_port}"
+
+def _fetch_json(url: str) -> dict:
+    with urlopen(url, timeout=0.5) as response:
+        return json.loads(response.read(65_536))
+
+
+def _is_qlib_ui_running(url: str) -> bool:
+    try:
+        health = _fetch_json(url + "/api/health")
+        if health.get("service") == "qlib-ui":
+            return True
+    except (OSError, ValueError):
+        pass
+
+    # Compatibility with UI versions released before the health endpoint.
+    try:
+        catalog = _fetch_json(url + "/api/catalog")
+        action_ids = {action.get("id") for action in catalog.get("actions", []) if isinstance(action, dict)}
+        return {"environment", "preview-data"}.issubset(action_ids)
+    except (OSError, ValueError):
+        return False
+
+
+def launch_ui(host: str = "127.0.0.1", port: int = 8787, no_browser: bool = False) -> None:
+    url = _server_url(host, port)
+    if _is_qlib_ui_running(url):
+        print(f"Qlib UI is already running at {url}")
+        if not no_browser:
+            webbrowser.open(url)
+        return
+
+    try:
+        server = create_server(host, port)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE and _is_qlib_ui_running(url):
+            print(f"Qlib UI is already running at {url}")
+            if not no_browser:
+                webbrowser.open(url)
+            return
+        raise
+
+    url = _server_url(host, server.server_port)
     print(f"Qlib UI is ready at {url}")
-    if not args.no_browser:
+    if not no_browser:
         threading.Timer(0.4, webbrowser.open, args=(url,)).start()
     try:
         server.serve_forever()
@@ -381,6 +423,16 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Open the local Qlib web interface.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args()
+
+    launch_ui(args.host, args.port, args.no_browser)
 
 
 if __name__ == "__main__":
