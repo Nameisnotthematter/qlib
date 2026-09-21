@@ -13,29 +13,12 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from qlib.cli.ui import ActionRunner, Run, build_actions, create_server, launch_ui, recommend_actions
+from qlib.cli.ui import ActionRunner, Run, build_actions, create_server, launch_ui
 
 
 @pytest.fixture
 def actions(tmp_path):
     return build_actions(data_dir=tmp_path / "data", python=sys.executable)
-
-
-def test_recommend_actions_understands_chinese_intent(actions):
-    result = recommend_actions("我想训练模型并回测收益和风险", actions)
-
-    assert result["action_ids"][0] == "lightgbm-backtest"
-    assert "LightGBM" in result["answer"]
-
-
-def test_natural_language_never_changes_whitelisted_command(actions):
-    expected = actions["environment"].command
-
-    result = recommend_actions("运行; rm -rf / ../../other.yaml", actions)
-
-    assert result["action_ids"] == ["environment", "preview-data"]
-    assert actions["environment"].command == expected
-    assert "rm" not in " ".join(expected)
 
 
 def test_catalog_cards_do_not_expose_execution_details(actions):
@@ -87,17 +70,20 @@ def test_expired_preview_token_is_rejected(actions):
         runner.start("environment", token)
 
 
-def test_runner_does_not_inherit_parent_standard_input(actions):
+def test_runner_does_not_inherit_parent_standard_input_or_api_key(actions):
     runner = ActionRunner(actions)
     run = Run(id="test", action_id="environment")
     process = MagicMock()
     process.stdout = []
     process.wait.return_value = 0
 
-    with patch("qlib.cli.ui.subprocess.Popen", return_value=process) as popen:
+    with patch.dict("qlib.cli.ui.os.environ", {"OPENROUTER_API_KEY": "secret"}), patch(
+        "qlib.cli.ui.subprocess.Popen", return_value=process
+    ) as popen:
         runner._execute(run)
 
     assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
+    assert "OPENROUTER_API_KEY" not in popen.call_args.kwargs["env"]
     assert run.status == "completed"
 
 
@@ -139,6 +125,33 @@ def test_http_api_requires_preview_token():
         with pytest.raises(HTTPError) as exc_info:
             urlopen(request)
         assert exc_info.value.code == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_http_chat_endpoint_uses_assistant_client():
+    client = MagicMock(model="openai/gpt-5.6-luna", configured=True)
+    client.complete.return_value = {"role": "assistant", "content": "这是来自模型的回答。"}
+    server = create_server("127.0.0.1", 0, assistant_client=client)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        status = json.load(urlopen(base_url + "/api/assistant/status"))
+        assert status == {"configured": True, "model": "openai/gpt-5.6-luna"}
+
+        request = Request(
+            base_url + "/api/assistant/chat",
+            data=json.dumps({"session_id": "session123", "message": "你好"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        result = json.load(urlopen(request))
+        assert result["type"] == "message"
+        assert result["message"] == "这是来自模型的回答。"
+        client.complete.assert_called_once()
     finally:
         server.shutdown()
         server.server_close()

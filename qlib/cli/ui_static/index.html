@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="通过简洁界面探索并运行 Qlib 量化研究工作流。" />
+    <meta name="description" content="用自然语言查询数据、探索因子并运行 Qlib 工作流。" />
     <title>Qlib 工作台</title>
     <link rel="stylesheet" href="/app.css" />
   </head>
@@ -13,36 +13,58 @@
         <span class="brand-mark">Q</span>
         <span>Qlib 工作台</span>
       </a>
-      <span class="local-badge"><i></i>仅在本机运行</span>
+      <div class="header-status">
+        <span id="model-badge" class="model-badge">正在检查模型…</span>
+        <span class="local-badge"><i></i>本机执行</span>
+      </div>
     </header>
 
-    <main>
-      <section class="assistant-panel" aria-labelledby="assistant-title">
-        <div class="eyebrow">自然语言助手</div>
-        <h1 id="assistant-title">你想用 Qlib 做什么？</h1>
-        <p class="intro">描述目标，我会从可用工作流中推荐下一步。命令只会在你确认后执行。</p>
-        <form id="ask-form" class="ask-form">
-          <label class="sr-only" for="query">描述你的量化研究目标</label>
-          <textarea id="query" rows="2" maxlength="500" placeholder="例如：我想先看看本地有哪些行情数据"></textarea>
-          <button type="submit" class="primary-button">查找工作流</button>
-        </form>
-        <div class="suggestions" aria-label="常用问题">
-          <button type="button" data-query="我的环境准备好了吗？">环境准备好了吗？</button>
-          <button type="button" data-query="查看最新股票行情">查看最新行情</button>
-          <button type="button" data-query="我想训练模型并回测收益">训练模型并回测</button>
+    <main class="shell">
+      <aside class="sidebar" aria-labelledby="abilities-title">
+        <div class="eyebrow">Qlib Assistant</div>
+        <h1 id="abilities-title">从问题到结果</h1>
+        <p>直接说出你的研究目标。助手会理解参数、查询本地数据，并在执行任务前向你确认。</p>
+        <div class="capability-list">
+          <div><span>01</span><strong>行情与因子</strong><small>按股票、日期和表达式查询</small></div>
+          <div><span>02</span><strong>股票池</strong><small>查看 CSI 300 / 500 等成分</small></div>
+          <div><span>03</span><strong>工作流</strong><small>发现并运行模型回测</small></div>
+          <div><span>04</span><strong>运行环境</strong><small>检查 Qlib 与本地数据状态</small></div>
         </div>
-        <div id="assistant-answer" class="assistant-answer" hidden></div>
-      </section>
+        <p class="privacy-note">对话和工具查询结果会发送至 OpenRouter；命令仅在本机、经你确认后执行。</p>
+      </aside>
 
-      <section class="workspace" aria-labelledby="workflow-title">
-        <div class="section-heading">
+      <section class="chat-panel" aria-labelledby="chat-title">
+        <div class="chat-header">
           <div>
-            <div class="eyebrow">可执行能力</div>
-            <h2 id="workflow-title">选择工作流</h2>
+            <div class="eyebrow">自然语言控制台</div>
+            <h2 id="chat-title">今天想研究什么？</h2>
           </div>
-          <span id="catalog-count" class="count"></span>
+          <button id="reset-chat" type="button" class="text-button neutral">新对话</button>
         </div>
-        <div id="workflow-grid" class="workflow-grid" aria-live="polite"></div>
+
+        <div id="messages" class="messages" aria-live="polite">
+          <article class="message assistant-message">
+            <div class="avatar">Q</div>
+            <div class="bubble">
+              <p>你好，我可以查询本地行情和因子、查看股票池、检查环境，也可以准备模型工作流供你确认运行。</p>
+            </div>
+          </article>
+        </div>
+
+        <div id="suggestions" class="suggestions" aria-label="示例问题">
+          <button type="button" data-query="检查我的 Qlib 环境和本地数据是否可用">检查运行环境</button>
+          <button type="button" data-query="查询 SH600000 在 2026-07-20 到 2026-08-04 的收盘价和成交量">查询股票行情</button>
+          <button type="button" data-query="列出可用的 LightGBM 工作流">发现工作流</button>
+        </div>
+
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="message-input">给 Qlib 助手发送消息</label>
+          <textarea id="message-input" rows="2" maxlength="4000" placeholder="例如：比较 SH600000 和 SZ000001 最近一个月的收益率"></textarea>
+          <button id="send-button" type="submit" class="send-button" aria-label="发送消息">
+            <span>发送</span><span aria-hidden="true">↑</span>
+          </button>
+        </form>
+        <div id="configuration-hint" class="configuration-hint" hidden></div>
       </section>
     </main>
 
@@ -55,12 +77,9 @@
         <button id="close-dialog" type="button" class="icon-button" aria-label="关闭">×</button>
       </div>
       <p id="dialog-description" class="dialog-description"></p>
-      <div class="detail-row">
-        <span>预计耗时</span>
-        <strong id="dialog-duration"></strong>
-      </div>
+      <div class="detail-row"><span>预计耗时</span><strong id="dialog-duration"></strong></div>
       <div class="command-block">
-        <div class="command-label">将执行以下命令</div>
+        <div class="command-label">确认后在本机执行</div>
         <code id="dialog-command"></code>
       </div>
       <div id="run-state" class="run-state" hidden>
@@ -75,19 +94,6 @@
         <button id="confirm-run" type="button" class="primary-button">确认并运行</button>
       </div>
     </dialog>
-
-    <template id="workflow-template">
-      <article class="workflow-card">
-        <div class="card-meta">
-          <span class="category"></span>
-          <span class="duration"></span>
-        </div>
-        <h3></h3>
-        <p class="description"></p>
-        <div class="outcome"></div>
-        <button type="button" class="card-action">查看并运行 <span aria-hidden="true">→</span></button>
-      </article>
-    </template>
 
     <script src="/app.js" defer></script>
   </body>

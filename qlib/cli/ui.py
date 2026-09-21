@@ -20,9 +20,18 @@ from dataclasses import asdict, dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from urllib.request import urlopen
+
+from qlib.cli.ui_agent import (
+    AgentConfigurationError,
+    AgentRequestError,
+    AssistantService,
+    OpenRouterClient,
+    QlibToolbox,
+    ToolProposal,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,13 +52,11 @@ class Action:
     duration: str
     command: Tuple[str, ...]
     cwd: Path
-    keywords: Tuple[str, ...]
 
     def public_dict(self) -> dict:
         value = asdict(self)
         value["command"] = shlex.join(self.command)
         value["cwd"] = str(self.cwd)
-        value.pop("keywords")
         return value
 
     def card_dict(self) -> dict:
@@ -70,7 +77,6 @@ def build_actions(data_dir: Path = DEFAULT_DATA_DIR, python: str = sys.executabl
             duration="约 2 秒",
             command=(python, "-m", "qlib.cli.ui_actions", "environment", "--data-dir", str(data_dir)),
             cwd=SAFE_ACTION_CWD,
-            keywords=("环境", "安装", "版本", "准备", "能用", "开始", "setup", "install", "version"),
         ),
         Action(
             id="preview-data",
@@ -81,7 +87,6 @@ def build_actions(data_dir: Path = DEFAULT_DATA_DIR, python: str = sys.executabl
             duration="约 5 秒",
             command=(python, "-m", "qlib.cli.ui_actions", "preview-data", "--data-dir", str(data_dir)),
             cwd=SAFE_ACTION_CWD,
-            keywords=("数据", "行情", "股票", "价格", "成交量", "读取", "预览", "data", "price"),
         ),
         Action(
             id="data-health",
@@ -98,7 +103,6 @@ def build_actions(data_dir: Path = DEFAULT_DATA_DIR, python: str = sys.executabl
                 str(data_dir),
             ),
             cwd=REPO_ROOT,
-            keywords=("质量", "健康", "缺失", "异常", "完整", "检查数据", "health", "missing"),
         ),
         Action(
             id="lightgbm-backtest",
@@ -114,41 +118,9 @@ def build_actions(data_dir: Path = DEFAULT_DATA_DIR, python: str = sys.executabl
                 "benchmarks/LightGBM/workflow_config_lightgbm_Alpha158.yaml",
             ),
             cwd=REPO_ROOT / "examples",
-            keywords=("模型", "训练", "预测", "回测", "收益", "风险", "lightgbm", "alpha158", "backtest"),
         ),
     )
     return {action.id: action for action in actions}
-
-
-def recommend_actions(query: str, actions: Optional[Dict[str, Action]] = None) -> dict:
-    actions = actions or build_actions()
-    normalized = query.strip().lower()
-    if not normalized:
-        return {
-            "answer": "可以描述你想查看数据、检查环境、验证数据质量，或运行模型回测。",
-            "action_ids": list(actions)[:3],
-        }
-
-    ranked = []
-    for index, action in enumerate(actions.values()):
-        score = sum(2 if keyword.lower() in normalized else 0 for keyword in action.keywords)
-        if action.category.lower() in normalized:
-            score += 1
-        ranked.append((score, -index, action.id))
-    ranked.sort(reverse=True)
-    selected = [action_id for score, _, action_id in ranked if score > 0][:3]
-
-    if not selected:
-        return {
-            "answer": "我暂时没找到完全匹配的任务。建议先检查环境，再预览行情数据。",
-            "action_ids": ["environment", "preview-data"],
-        }
-
-    primary = actions[selected[0]]
-    return {
-        "answer": f"你可以先执行“{primary.title}”。它会{primary.outcome}",
-        "action_ids": selected,
-    }
 
 
 @dataclass
@@ -181,6 +153,21 @@ class ActionRunner:
         self.runs: Dict[str, Run] = {}
         self.confirmations: Dict[str, Tuple[str, float]] = {}
         self.lock = threading.Lock()
+
+    def register_proposal(self, proposal: ToolProposal) -> dict:
+        action = Action(
+            id=f"assistant-{uuid.uuid4().hex}",
+            title=proposal.title,
+            category="助手建议",
+            description=proposal.description,
+            outcome=proposal.description,
+            duration=proposal.duration,
+            command=proposal.command,
+            cwd=proposal.cwd,
+        )
+        with self.lock:
+            self.actions[action.id] = action
+        return self.preview(action.id)
 
     def preview(self, action_id: str) -> dict:
         if action_id not in self.actions:
@@ -220,6 +207,7 @@ class ActionRunner:
         action = self.actions[run.action_id]
         run.status = "running"
         env = os.environ.copy()
+        env.pop("OPENROUTER_API_KEY", None)
         env["PYTHONUNBUFFERED"] = "1"
         try:
             run.process = subprocess.Popen(
@@ -250,6 +238,7 @@ class ActionRunner:
 
 class QlibUIHandler(BaseHTTPRequestHandler):
     runner = ActionRunner()
+    assistant = AssistantService(OpenRouterClient(), QlibToolbox(REPO_ROOT, DEFAULT_DATA_DIR), runner.register_proposal)
 
     def do_GET(self) -> None:
         if not self._has_local_host():
@@ -261,6 +250,12 @@ class QlibUIHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/catalog":
             self._json({"actions": [action.card_dict() for action in self.runner.actions.values()]})
+            return
+        if path == "/api/assistant/status":
+            try:
+                self._json(self.assistant.status())
+            except AgentConfigurationError as exc:
+                self._json({"configured": False, "model": self.assistant.client.model, "error": str(exc)})
             return
         if path.startswith("/api/runs/"):
             run_id = path[len("/api/runs/") :].split("/")[0]
@@ -283,8 +278,23 @@ class QlibUIHandler(BaseHTTPRequestHandler):
             self._json({"error": "Invalid JSON request."}, HTTPStatus.BAD_REQUEST)
             return
 
-        if path == "/api/recommend":
-            self._json(recommend_actions(str(payload.get("query", "")), self.runner.actions))
+        if path == "/api/assistant/chat":
+            try:
+                self._json(self.assistant.chat(str(payload.get("session_id", "")), str(payload.get("message", ""))))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except AgentConfigurationError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.SERVICE_UNAVAILABLE)
+            except AgentRequestError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+        if path == "/api/assistant/reset":
+            try:
+                self.assistant.reset(str(payload.get("session_id", "")))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self._json({"status": "reset"})
             return
         if path.startswith("/api/actions/") and path.endswith("/preview"):
             action_id = path[len("/api/actions/") : -len("/preview")]
@@ -358,14 +368,17 @@ class QlibUIHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def create_server(host: str = "127.0.0.1", port: int = 8787) -> ThreadingHTTPServer:
+def create_server(host: str = "127.0.0.1", port: int = 8787, assistant_client=None) -> ThreadingHTTPServer:
     try:
         is_loopback = ipaddress.ip_address(host).is_loopback
     except ValueError:
         is_loopback = host == "localhost"
     if not is_loopback:
         raise ValueError("Qlib UI only accepts a loopback host (127.0.0.1, ::1, or localhost).")
-    handler = type("BoundQlibUIHandler", (QlibUIHandler,), {"runner": ActionRunner()})
+    runner = ActionRunner()
+    client = assistant_client or OpenRouterClient()
+    assistant = AssistantService(client, QlibToolbox(REPO_ROOT, DEFAULT_DATA_DIR), runner.register_proposal)
+    handler = type("BoundQlibUIHandler", (QlibUIHandler,), {"runner": runner, "assistant": assistant})
     return ThreadingHTTPServer((host, port), handler)
 
 

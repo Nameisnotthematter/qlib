@@ -4,6 +4,7 @@
 """Small, read-only actions used by the local Qlib UI."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -48,17 +49,81 @@ def preview_data(data_dir: Path) -> None:
     print(data.tail(5).to_string())
 
 
+def market_data(
+    data_dir: Path,
+    instruments_json: str,
+    fields_json: str,
+    start_date: str,
+    end_date: str,
+    limit: int,
+) -> None:
+    import qlib
+    from qlib.constant import REG_CN
+    from qlib.data import D
+
+    instruments = json.loads(instruments_json)
+    fields = json.loads(fields_json)
+    qlib.init(provider_uri=str(data_dir), region=REG_CN)
+    data = D.features(
+        instruments,
+        fields,
+        start_time=start_date,
+        end_time=end_date,
+        freq="day",
+    )
+    print(data.tail(limit).to_string())
+
+
+def list_instruments(
+    data_dir: Path,
+    market: str,
+    start_date: str = None,
+    end_date: str = None,
+    limit: int = 30,
+) -> None:
+    import qlib
+    from qlib.constant import REG_CN
+    from qlib.data import D
+
+    qlib.init(provider_uri=str(data_dir), region=REG_CN)
+    instruments = D.list_instruments(
+        D.instruments(market),
+        start_time=start_date,
+        end_time=end_date,
+        freq="day",
+        as_list=True,
+    )
+    print(json.dumps({"market": market, "count": len(instruments), "instruments": instruments[:limit]}))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a built-in Qlib UI action.")
-    parser.add_argument("action", choices=("environment", "preview-data"))
+    parser.add_argument("action", choices=("environment", "preview-data", "market-data", "list-instruments"))
     parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--instruments-json")
+    parser.add_argument("--fields-json")
+    parser.add_argument("--start-date")
+    parser.add_argument("--end-date")
+    parser.add_argument("--market")
+    parser.add_argument("--limit", type=int, default=20)
     args = parser.parse_args()
     data_dir = args.data_dir.expanduser().resolve()
 
     if args.action == "environment":
         environment_summary(data_dir)
-    else:
+    elif args.action == "preview-data":
         preview_data(data_dir)
+    elif args.action == "market-data":
+        market_data(
+            data_dir,
+            args.instruments_json,
+            args.fields_json,
+            args.start_date,
+            args.end_date,
+            args.limit,
+        )
+    else:
+        list_instruments(data_dir, args.market, args.start_date, args.end_date, args.limit)
 
 
 if __name__ == "__main__":
