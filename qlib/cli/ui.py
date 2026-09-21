@@ -226,6 +226,7 @@ class ActionRunner:
                 action.command,
                 cwd=action.cwd,
                 env=env,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

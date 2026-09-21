@@ -2,11 +2,12 @@
 # Licensed under the MIT License.
 
 import json
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -84,6 +85,20 @@ def test_expired_preview_token_is_rejected(actions):
 
     with pytest.raises(PermissionError):
         runner.start("environment", token)
+
+
+def test_runner_does_not_inherit_parent_standard_input(actions):
+    runner = ActionRunner(actions)
+    run = Run(id="test", action_id="environment")
+    process = MagicMock()
+    process.stdout = []
+    process.wait.return_value = 0
+
+    with patch("qlib.cli.ui.subprocess.Popen", return_value=process) as popen:
+        runner._execute(run)
+
+    assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
+    assert run.status == "completed"
 
 
 def test_all_actions_use_fixed_argument_lists_and_trusted_paths(actions):
