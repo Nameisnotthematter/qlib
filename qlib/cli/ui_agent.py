@@ -18,6 +18,14 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from qlib.cli.ui_artifacts import (
+    DEFAULT_ARTIFACT_ROOT,
+    DEFAULT_IMPORT_ROOT,
+    ArtifactValidationError,
+    imported_dataset_path,
+    inspect_artifact,
+)
+
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-5.6-luna"
@@ -155,14 +163,53 @@ class QlibToolbox:
         "Rsquare",
     }
 
-    def __init__(self, repo_root: Path, data_dir: Path, python: str = sys.executable):
+    def __init__(
+        self,
+        repo_root: Path,
+        data_dir: Path,
+        python: str = sys.executable,
+        artifact_root: Path = DEFAULT_ARTIFACT_ROOT,
+        import_root: Path = DEFAULT_IMPORT_ROOT,
+    ):
         self.repo_root = repo_root.resolve()
         self.data_dir = data_dir.expanduser().resolve()
         self.python = python
+        self.artifact_root = Path(artifact_root).expanduser().resolve()
+        self.import_root = Path(import_root).expanduser().resolve()
 
     def schemas(self) -> List[dict]:
         return [
             self._schema("inspect_environment", "检查 Qlib、Python 与本地数据是否已准备好。", {}),
+            self._schema(
+                "inspect_data_artifact",
+                "读取用户明确提供的 Data Agent 单资产产物目录，校验完整性并返回数据概况。",
+                {"path": {"type": "string", "description": "用户提供的 processed artifact 绝对路径。"}},
+                required=("path",),
+            ),
+            self._schema(
+                "prepare_data_artifact_import",
+                "准备把已校验的单资产产物转换为可供 Qlib 查询的数据集；必须由用户确认后执行。",
+                {"path": {"type": "string", "description": "用户提供的 processed artifact 绝对路径。"}},
+                required=("path",),
+            ),
+            self._schema(
+                "query_imported_data",
+                "查询已经导入 Qlib 的单资产 Data Agent 产物。",
+                {
+                    "path": {"type": "string", "description": "原 processed artifact 绝对路径。"},
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 12,
+                        "description": "Qlib 字段或表达式，例如 $close、Mean($close, 5)。",
+                    },
+                    "start_date": {"type": "string", "description": "开始日期 YYYY-MM-DD。"},
+                    "end_date": {"type": "string", "description": "结束日期 YYYY-MM-DD。"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                required=("path", "fields", "start_date", "end_date", "limit"),
+            ),
             self._schema(
                 "query_market_data",
                 "查询一只或多只 A 股的行情或 Qlib 表达式/因子数据。",
@@ -230,6 +277,42 @@ class QlibToolbox:
         }
 
     def execute(self, name: str, arguments: dict) -> Union[str, ToolProposal]:
+        if name == "inspect_data_artifact":
+            path = self._artifact_argument(arguments)
+            return json.dumps(inspect_artifact(path, self.artifact_root), ensure_ascii=False)
+        if name == "prepare_data_artifact_import":
+            path = self._artifact_argument(arguments)
+            summary = inspect_artifact(path, self.artifact_root)
+            target = imported_dataset_path(summary, self.import_root)
+            if target.is_dir():
+                return json.dumps(
+                    {"status": "already_imported", "dataset": str(target), "artifact": summary}, ensure_ascii=False
+                )
+            return ToolProposal(
+                title=f"导入 {summary['instrument']} 到 Qlib",
+                description=(
+                    f"把已校验的 {summary['rows']} 行 {summary['frequency']} 数据转换为独立 Qlib 数据集。"
+                    f"源摘要 {summary['data_sha256'][:12]}，不会修改原文件或 A 股数据目录。"
+                ),
+                duration="通常少于 1 分钟",
+                command=(
+                    self.python,
+                    "-m",
+                    "qlib.cli.ui_actions",
+                    "import-artifact",
+                    "--artifact-path",
+                    str(path),
+                    "--artifact-root",
+                    str(self.artifact_root),
+                    "--import-root",
+                    str(self.import_root),
+                    "--expected-digest",
+                    summary["data_sha256"],
+                ),
+                cwd=self.repo_root,
+            )
+        if name == "query_imported_data":
+            return self._query_imported_data(arguments)
         if name == "inspect_environment":
             self._require_no_arguments(arguments)
             return self._run(
@@ -267,6 +350,78 @@ class QlibToolbox:
                 cwd=self.repo_root,
             )
         raise ToolValidationError(f"未知工具：{name}")
+
+    def artifact_context(self, message: str) -> Optional[dict]:
+        """Recognize only an explicit path under the configured Data Agent root."""
+
+        root = str(self.artifact_root)
+        match = re.search(re.escape(root) + r"/[A-Za-z0-9][A-Za-z0-9._-]{0,95}", message)
+        if not match:
+            return None
+        path = Path(match.group(0))
+        try:
+            summary = inspect_artifact(path, self.artifact_root)
+        except (ArtifactValidationError, OSError):
+            return None
+        return {"path": str(path.resolve()), "summary": json.dumps(summary, ensure_ascii=False)}
+
+    def _artifact_argument(self, arguments: dict) -> Path:
+        if set(arguments) != {"path"}:
+            raise ToolValidationError("该工具只接受 path 参数。")
+        path = Path(str(arguments.get("path", "")))
+        try:
+            inspect_artifact(path, self.artifact_root)
+        except (ArtifactValidationError, OSError) as exc:
+            raise ToolValidationError(str(exc)) from exc
+        return path.resolve()
+
+    def _query_imported_data(self, arguments: dict) -> str:
+        allowed = {"path", "fields", "start_date", "end_date", "limit"}
+        if set(arguments) != allowed:
+            raise ToolValidationError("query_imported_data 参数不完整或包含额外参数。")
+        path = Path(str(arguments["path"]))
+        try:
+            summary = inspect_artifact(path, self.artifact_root)
+        except (ArtifactValidationError, OSError) as exc:
+            raise ToolValidationError(str(exc)) from exc
+        target = imported_dataset_path(summary, self.import_root)
+        if not target.is_dir():
+            raise ToolValidationError("该产物尚未导入 Qlib；请先准备导入并在 UI 中确认执行。")
+        fields = arguments["fields"]
+        if not isinstance(fields, list) or not 1 <= len(fields) <= 12:
+            raise ToolValidationError("fields 必须包含 1–12 个字段或表达式。")
+        fields = [str(value).strip() for value in fields]
+        if any(len(value) > 120 or not self._field_pattern.fullmatch(value) for value in fields):
+            raise ToolValidationError("字段包含不支持的字符或长度超过限制。")
+        for field in fields:
+            self._validate_expression(field)
+        start_date = self._date(arguments["start_date"], "start_date")
+        end_date = self._date(arguments["end_date"], "end_date")
+        if start_date > end_date:
+            raise ToolValidationError("start_date 不能晚于 end_date。")
+        limit = self._limit(arguments["limit"])
+        return self._run(
+            (
+                self.python,
+                "-m",
+                "qlib.cli.ui_actions",
+                "market-data",
+                "--data-dir",
+                str(target),
+                "--instruments-json",
+                json.dumps([summary["instrument"]]),
+                "--fields-json",
+                json.dumps(fields),
+                "--start-date",
+                start_date.isoformat(),
+                "--end-date",
+                end_date.isoformat(),
+                "--limit",
+                str(limit),
+                "--region",
+                "us",
+            )
+        )
 
     @staticmethod
     def _require_no_arguments(arguments: dict) -> None:
@@ -386,8 +541,11 @@ class QlibToolbox:
         return limit
 
     def _run(self, command: Tuple[str, ...]) -> str:
-        env = os.environ.copy()
-        env.pop("OPENROUTER_API_KEY", None)
+        env = {
+            key: os.environ[key]
+            for key in ("HOME", "PATH", "TMPDIR", "LANG", "LC_ALL")
+            if key in os.environ
+        }
         env["PYTHONUNBUFFERED"] = "1"
         try:
             result = subprocess.run(
@@ -460,7 +618,10 @@ class QlibToolbox:
 
 SYSTEM_PROMPT = """你是本机 Qlib 量化研究助手。始终使用简体中文，直接回答用户的问题。
 涉及本机数据、股票池、因子或工作流时必须调用提供的工具，不得编造结果。
-不要生成或建议任意 Shell 命令、Python 代码、文件路径或未注册的 YAML。
+用户明确提供 Data Agent processed artifact 路径时，必须用 inspect_data_artifact 读取；不要回答“无法读取本地路径”。
+系统注入的“已读取 artifact 上下文”也是本地只读工具的已验证结果，应直接据此回答后续概况问题。
+可以使用用户明确提供且工具验证通过的 artifact 路径；不要编造或建议其他文件路径、Shell 命令、Python 代码或未注册的 YAML。
+导入 artifact 必须调用 prepare_data_artifact_import 并等待用户在 UI 中确认；不得绕过确认。
 查询行情时，从用户话语中提取股票代码、日期和 Qlib 字段；信息不足时只追问缺失参数。
 运行工作流或数据健康检查需要工具返回确认卡片，由用户在 UI 中确认，你不能绕过确认。
 工具报错时解释原因并建议合法参数。回答保持简洁。"""
@@ -477,6 +638,7 @@ class AssistantService:
         self.toolbox = toolbox
         self.proposal_handler = proposal_handler
         self.sessions: Dict[str, List[dict]] = {}
+        self.artifact_contexts: Dict[str, dict] = {}
         self.lock = threading.Lock()
 
     def status(self) -> dict:
@@ -485,6 +647,7 @@ class AssistantService:
     def reset(self, session_id: str) -> None:
         with self.lock:
             self.sessions.pop(self._session_id(session_id), None)
+            self.artifact_contexts.pop(self._session_id(session_id), None)
 
     def chat(self, session_id: str, user_message: str) -> dict:
         session_id = self._session_id(session_id)
@@ -493,7 +656,25 @@ class AssistantService:
             raise ValueError("消息长度必须在 1–4000 个字符之间。")
         with self.lock:
             history = list(self.sessions.get(session_id, []))
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history, {"role": "user", "content": user_message}]
+        context_reader = getattr(self.toolbox, "artifact_context", None)
+        context = context_reader(user_message) if callable(context_reader) else None
+        with self.lock:
+            if context:
+                self.artifact_contexts[session_id] = context
+            else:
+                context = self.artifact_contexts.get(session_id)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if context:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "系统已读取并校验用户明确提供的 artifact。路径："
+                        f"{context['path']}\n已读取 artifact 上下文：{context['summary']}"
+                    ),
+                }
+            )
+        messages.extend((*history, {"role": "user", "content": user_message}))
 
         for _ in range(MAX_TOOL_ROUNDS):
             raw_message = self.client.complete(messages, self.toolbox.schemas())
@@ -506,7 +687,7 @@ class AssistantService:
                 answer = assistant_message["content"].strip()
                 if not answer:
                     raise AgentRequestError("模型没有返回可显示的内容。")
-                self._save(session_id, messages[1:])
+                self._save(session_id, [message for message in messages[1:] if message.get("role") != "system"])
                 return {"type": "message", "message": answer, "session_id": session_id, "model": self.client.model}
 
             for tool_call in tool_calls:
@@ -524,7 +705,7 @@ class AssistantService:
                             "content": "已生成本地执行预览，正在等待用户确认。",
                         }
                     )
-                    self._save(session_id, messages[1:])
+                    self._save(session_id, [message for message in messages[1:] if message.get("role") != "system"])
                     return {
                         "type": "proposal",
                         "message": assistant_message["content"].strip() or f"我已准备“{result.title}”，请确认后执行。",

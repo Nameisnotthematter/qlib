@@ -206,8 +206,11 @@ class ActionRunner:
     def _execute(self, run: Run) -> None:
         action = self.actions[run.action_id]
         run.status = "running"
-        env = os.environ.copy()
-        env.pop("OPENROUTER_API_KEY", None)
+        env = {
+            key: os.environ[key]
+            for key in ("HOME", "PATH", "TMPDIR", "LANG", "LC_ALL")
+            if key in os.environ
+        }
         env["PYTHONUNBUFFERED"] = "1"
         try:
             run.process = subprocess.Popen(

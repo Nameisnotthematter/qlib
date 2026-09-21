@@ -190,3 +190,50 @@ def test_toolbox_accepts_common_factor_expression(toolbox):
 
     assert result == "ok"
     assert run.called
+
+
+def test_toolbox_exposes_data_agent_artifact_tools(tmp_path):
+    artifact_root = tmp_path / "processed"
+    toolbox = QlibToolbox(
+        tmp_path,
+        tmp_path / "data",
+        python="python",
+        artifact_root=artifact_root,
+        import_root=tmp_path / "imported",
+    )
+
+    schemas = {item["function"]["name"]: item["function"] for item in toolbox.schemas()}
+
+    assert "inspect_data_artifact" in schemas
+    assert schemas["inspect_data_artifact"]["parameters"]["required"] == ["path"]
+    assert "prepare_data_artifact_import" in schemas
+    assert "query_imported_data" in schemas
+
+
+def test_assistant_keeps_verified_artifact_context_for_followup():
+    class ArtifactToolbox(FakeToolbox):
+        def artifact_context(self, message):
+            if "ETH-USDT_20210714_20260714" not in message:
+                return None
+            return {
+                "path": "/allowed/ETH-USDT_20210714_20260714",
+                "summary": '{"artifact_id":"ETH-USDT_20210714_20260714","rows":1827}',
+            }
+
+    client = FakeClient(
+        [
+            {"role": "assistant", "content": "已读取该数据。"},
+            {"role": "assistant", "content": "共 1827 行。"},
+        ]
+    )
+    service = AssistantService(client, ArtifactToolbox(), lambda _proposal: {})
+
+    service.chat("session123", "/allowed/ETH-USDT_20210714_20260714")
+    result = service.chat("session123", "查看数据概况")
+
+    assert result["message"] == "共 1827 行。"
+    second_request = client.calls[1][0]
+    assert any(
+        message["role"] == "system" and "1827" in message["content"] and "已读取" in message["content"]
+        for message in second_request
+    )

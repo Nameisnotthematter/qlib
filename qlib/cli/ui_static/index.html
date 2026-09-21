@@ -23,12 +23,12 @@
       <aside class="sidebar" aria-labelledby="abilities-title">
         <div class="eyebrow">Qlib Assistant</div>
         <h1 id="abilities-title">从问题到结果</h1>
-        <p>直接说出你的研究目标。助手会理解参数、查询本地数据，并在执行任务前向你确认。</p>
+        <p>直接说出研究目标或粘贴 Data Agent 产物路径。助手会先读取概况，并在写入前向你确认。</p>
         <div class="capability-list">
-          <div><span>01</span><strong>行情与因子</strong><small>按股票、日期和表达式查询</small></div>
-          <div><span>02</span><strong>股票池</strong><small>查看 CSI 300 / 500 等成分</small></div>
-          <div><span>03</span><strong>工作流</strong><small>发现并运行模型回测</small></div>
-          <div><span>04</span><strong>运行环境</strong><small>检查 Qlib 与本地数据状态</small></div>
+          <div><span>01</span><strong>数据概况</strong><small>校验单资产产物并汇总</small></div>
+          <div><span>02</span><strong>导入 Qlib</strong><small>确认后转换并回读验证</small></div>
+          <div><span>03</span><strong>行情与因子</strong><small>查询已导入资产或 A 股</small></div>
+          <div><span>04</span><strong>工作流</strong><small>发现并运行模型回测</small></div>
         </div>
         <p class="privacy-note">对话和工具查询结果会发送至 OpenRouter；命令仅在本机、经你确认后执行。</p>
       </aside>
@@ -46,20 +46,21 @@
           <article class="message assistant-message">
             <div class="avatar">Q</div>
             <div class="bubble">
-              <p>你好，我可以查询本地行情和因子、查看股票池、检查环境，也可以准备模型工作流供你确认运行。</p>
+              <p>你好。把 Data Agent 的 processed 目录路径发给我，我可以读取数据概况、检查质量，并在你确认后导入 Qlib。</p>
             </div>
           </article>
         </div>
 
         <div id="suggestions" class="suggestions" aria-label="示例问题">
           <button type="button" data-query="检查我的 Qlib 环境和本地数据是否可用">检查运行环境</button>
+          <button type="button" data-query="我有一个 Data Agent processed 目录，请告诉我如何查看概况并导入 Qlib">导入本地数据</button>
           <button type="button" data-query="查询 SH600000 在 2026-07-20 到 2026-08-04 的收盘价和成交量">查询股票行情</button>
           <button type="button" data-query="列出可用的 LightGBM 工作流">发现工作流</button>
         </div>
 
         <form id="chat-form" class="composer">
           <label class="sr-only" for="message-input">给 Qlib 助手发送消息</label>
-          <textarea id="message-input" rows="2" maxlength="4000" placeholder="例如：比较 SH600000 和 SZ000001 最近一个月的收益率"></textarea>
+          <textarea id="message-input" rows="2" maxlength="4000" placeholder="粘贴 processed 目录路径，或直接描述你想查询的行情与因子"></textarea>
           <button id="send-button" type="submit" class="send-button" aria-label="发送消息">
             <span>发送</span><span aria-hidden="true">↑</span>
           </button>

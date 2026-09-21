@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Small, read-only actions used by the local Qlib UI."""
+"""Constrained local actions used by the Qlib UI."""
 
 import argparse
 import json
@@ -56,14 +56,15 @@ def market_data(
     start_date: str,
     end_date: str,
     limit: int,
+    region: str = "cn",
 ) -> None:
     import qlib
-    from qlib.constant import REG_CN
+    from qlib.constant import REG_CN, REG_US
     from qlib.data import D
 
     instruments = json.loads(instruments_json)
     fields = json.loads(fields_json)
-    qlib.init(provider_uri=str(data_dir), region=REG_CN)
+    qlib.init(provider_uri=str(data_dir), region=REG_US if region == "us" else REG_CN)
     data = D.features(
         instruments,
         fields,
@@ -98,15 +99,38 @@ def list_instruments(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a built-in Qlib UI action.")
-    parser.add_argument("action", choices=("environment", "preview-data", "market-data", "list-instruments"))
-    parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument(
+        "action", choices=("environment", "preview-data", "market-data", "list-instruments", "import-artifact")
+    )
+    parser.add_argument("--data-dir", type=Path)
+    parser.add_argument("--artifact-path", type=Path)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--import-root", type=Path)
+    parser.add_argument("--expected-digest")
     parser.add_argument("--instruments-json")
     parser.add_argument("--fields-json")
     parser.add_argument("--start-date")
     parser.add_argument("--end-date")
     parser.add_argument("--market")
     parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--region", choices=("cn", "us"), default="cn")
     args = parser.parse_args()
+
+    if args.action == "import-artifact":
+        if not args.artifact_path or not args.artifact_root or not args.import_root or not args.expected_digest:
+            parser.error(
+                "import-artifact requires --artifact-path, --artifact-root, --import-root, and --expected-digest"
+            )
+        from qlib.cli.ui_artifacts import import_artifact
+
+        target = import_artifact(
+            args.artifact_path, args.artifact_root, args.import_root, expected_digest=args.expected_digest
+        )
+        print(json.dumps({"status": "imported", "dataset": str(target)}, ensure_ascii=False))
+        return
+
+    if args.data_dir is None:
+        parser.error(f"{args.action} requires --data-dir")
     data_dir = args.data_dir.expanduser().resolve()
 
     if args.action == "environment":
@@ -121,6 +145,7 @@ def main() -> None:
             args.start_date,
             args.end_date,
             args.limit,
+            args.region,
         )
     else:
         list_instruments(data_dir, args.market, args.start_date, args.end_date, args.limit)
